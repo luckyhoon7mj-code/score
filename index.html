@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>과일 합성 게임: 곰돌이 만들기</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #f0f0f0;
+            font-family: 'Malgun Gothic', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        h1 { margin: 10px 0; font-size: 24px; color: #333; }
+
+        /* 메뉴 화면 */
+        #menu {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255,255,255,0.95);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+        }
+
+        button {
+            padding: 15px 30px;
+            font-size: 20px;
+            margin: 10px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            transition: 0.3s;
+        }
+        button:hover { background-color: #45a049; }
+
+        /* 게임 영역 */
+        #game-container {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            align-items: center;
+            width: 100%;
+            height: 85vh;
+        }
+
+        .game-board {
+            position: relative;
+            background-color: #ffecd2;
+            border: 4px solid #5d4037;
+            border-radius: 0 0 20px 20px;
+            overflow: hidden;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+        }
+
+        .score-board {
+            position: absolute;
+            top: 10px; left: 10px;
+            font-size: 20px; font-weight: bold; color: #333;
+            pointer-events: none;
+            z-index: 2;
+        }
+
+        .player-label {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 100px; opacity: 0.1;
+            pointer-events: none; font-weight: bold;
+        }
+
+        .game-over-overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            font-size: 30px;
+            z-index: 20;
+            text-align: center;
+        }
+        
+        .game-over-overlay button {
+            margin-top: 20px;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>과일 합성 게임: 곰돌이를 찾아라!</h1>
+    
+    <div id="game-container"></div>
+
+    <div id="menu">
+        <h1>게임 모드 선택</h1>
+        <p>마지막 단계인 '황금 곰돌이'를 만들면 승리합니다.</p>
+        <button onclick="startGame(1)">1인용 (혼자하기)</button>
+        <button onclick="startGame(2)">2인용 (대결하기)</button>
+    </div>
+
+    <script>
+        const Engine = Matter.Engine,
+              Render = Matter.Render,
+              Runner = Matter.Runner,
+              Bodies = Matter.Bodies,
+              Composite = Matter.Composite,
+              Events = Matter.Events,
+              World = Matter.World;
+
+        // 게임 설정
+        const WIDTH = 500;
+        const HEIGHT = 700; 
+        const WALL_THICKNESS = 40;
+        const DEADLINE_Y = 120; // 빨간 선 높이
+
+        // 과일 데이터 (이미지 대신 색상만 사용하도록 수정)
+        const FRUITS = [
+            { name: "블루베리", radius: 15, color: "#6A0DAD" },
+            { name: "체리", radius: 23, color: "#FF0000" },
+            { name: "딸기", radius: 32, color: "#FF69B4" },
+            { name: "귤", radius: 40, color: "#FFA500" },
+            { name: "사과", radius: 52, color: "#FF4444" },
+            { name: "복숭아", radius: 65, color: "#FFC0CB" },
+            { name: "망고", radius: 78, color: "#FFD700" },
+            { name: "용과", radius: 90, color: "#C71585" },
+            { name: "배", radius: 103, color: "#cfd186" },
+            { name: "코코넛", radius: 115, color: "#654321" },
+            { name: "수박", radius: 125, color: "#008000" },
+            // 마지막 단계: 외부 이미지 없이 황금색 원으로 대체
+            { name: "황금 곰돌이", radius: 135, color: "#FFB300" }
+        ];
+
+        let gameMode = 0;
+        let games = [];
+
+        class GameInstance {
+            constructor(containerId, playerId, inputScheme) {
+                this.playerId = playerId;
+                this.inputScheme = inputScheme; 
+                this.isGameOver = false;
+                this.score = 0;
+                this.currentFruitIndex = 0;
+                this.canDrop = true;
+                
+                // 무적 시간 초기화 (현재 시간보다 과거로 설정)
+                this.immunityUntil = 0;
+                
+                // HTML 요소 생성
+                this.container = document.createElement('div');
+                this.container.className = 'game-board';
+                this.container.style.width = WIDTH + 'px';
+                this.container.style.height = HEIGHT + 'px';
+                
+                this.scoreElement = document.createElement('div');
+                this.scoreElement.className = 'score-board';
+                this.scoreElement.innerText = "점수: 0";
+                this.container.appendChild(this.scoreElement);
+
+                if(gameMode === 2) {
+                    const label = document.createElement('div');
+                    label.className = 'player-label';
+                    label.innerText = playerId + "P";
+                    this.container.appendChild(label);
+                }
+
+                this.overlay = document.createElement('div');
+                this.overlay.className = 'game-over-overlay';
+                this.container.appendChild(this.overlay);
+
+                document.getElementById(containerId).appendChild(this.container);
+
+                // 물리 엔진 초기화
+                this.engine = Engine.create();
+                this.world = this.engine.world;
+
+                // 렌더러 초기화
+                this.render = Render.create({
+                    element: this.container,
+                    engine: this.engine,
+                    options: {
+                        width: WIDTH,
+                        height: HEIGHT,
+                        wireframes: false,
+                        background: 'transparent'
+                    }
+                });
+
+                // 벽 생성
+                const ground = Bodies.rectangle(WIDTH/2, HEIGHT + WALL_THICKNESS/2 - 10, WIDTH, WALL_THICKNESS, { isStatic: true, render: { fillStyle: '#5d4037' } });
+                const leftWall = Bodies.rectangle(0 - WALL_THICKNESS/2, HEIGHT/2, WALL_THICKNESS, HEIGHT, { isStatic: true, render: { fillStyle: '#5d4037' } });
+                const rightWall = Bodies.rectangle(WIDTH + WALL_THICKNESS/2, HEIGHT/2, WALL_THICKNESS, HEIGHT, { isStatic: true, render: { fillStyle: '#5d4037' } });
+                
+                Composite.add(this.world, [ground, leftWall, rightWall]);
+
+                this.previewFruit = null;
+                this.createNewPreview();
+
+                // 렌더링 후 이벤트 (빨간 선 그리기)
+                Events.on(this.render, 'afterRender', () => {
+                    const ctx = this.render.context;
+                    
+                    // 무적 시간 체크
+                    const isImmune = Date.now() < this.immunityUntil;
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(0, DEADLINE_Y);
+                    ctx.lineTo(WIDTH, DEADLINE_Y);
+                    
+                    if (isImmune) {
+                        // 무적일 때: 노란색/빨간색 깜빡임
+                        ctx.strokeStyle = (Math.floor(Date.now() / 100) % 2 === 0) ? '#ffeb3b' : '#ff5252';
+                        ctx.lineWidth = 4;
+                    } else {
+                        // 평소: 빨간 점선
+                        ctx.strokeStyle = 'red';
+                        ctx.lineWidth = 2;
+                    }
+                    
+                    ctx.setLineDash([10, 10]);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                });
+
+                // 충돌 및 게임오버 체크
+                Events.on(this.engine, 'collisionStart', (event) => this.handleCollisions(event));
+                Events.on(this.engine, 'beforeUpdate', () => this.checkGameOverCondition());
+
+                // 실행
+                Render.run(this.render);
+                this.runner = Runner.create();
+                Runner.run(this.runner, this.engine);
+            }
+
+            createNewPreview() {
+                if (this.isGameOver) return;
+                this.currentFruitIndex = Math.floor(Math.random() * 4);
+                this.previewX = WIDTH / 2;
+            }
+
+            handleInput(key) {
+                if (this.isGameOver || !this.canDrop) return;
+
+                const moveSpeed = 20; 
+                const currentRadius = FRUITS[this.currentFruitIndex].radius;
+
+                if (this.inputScheme.left.includes(key)) {
+                    this.previewX = Math.max(currentRadius + 10, this.previewX - moveSpeed);
+                } else if (this.inputScheme.right.includes(key)) {
+                    this.previewX = Math.min(WIDTH - currentRadius - 10, this.previewX + moveSpeed);
+                } else if (this.inputScheme.drop.includes(key)) {
+                    this.dropFruit();
+                }
+            }
+
+            drawPreview(ctx) {
+                if(!this.canDrop || this.isGameOver) return;
+                const fruit = FRUITS[this.currentFruitIndex];
+                
+                // 가이드라인
+                ctx.beginPath();
+                ctx.moveTo(this.previewX, 50 + fruit.radius);
+                ctx.lineTo(this.previewX, HEIGHT);
+                ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // 과일 미리보기
+                ctx.beginPath();
+                ctx.arc(this.previewX, 50, fruit.radius, 0, 2 * Math.PI);
+                ctx.fillStyle = fruit.color;
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.stroke();
+            }
+
+            dropFruit() {
+                if (!this.canDrop) return;
+                this.canDrop = false;
+
+                // 3초간 무적 설정
+                this.immunityUntil = Date.now() + 3000;
+
+                const fruitInfo = FRUITS[this.currentFruitIndex];
+                
+                // 과일 생성 (이미지 속성 제거)
+                const body = Bodies.circle(this.previewX, 50, fruitInfo.radius, {
+                    restitution: 0.2, 
+                    label: `fruit_${this.currentFruitIndex}`,
+                    render: { fillStyle: fruitInfo.color }
+                });
+
+                // 낙하 중 상태 플래그
+                body.isFalling = true;
+
+                Composite.add(this.world, body);
+
+                // 다음 과일 준비
+                setTimeout(() => {
+                    this.canDrop = true;
+                    this.createNewPreview();
+                }, 500); 
+            }
+
+            handleCollisions(event) {
+                const pairs = event.pairs;
+                for (let i = 0; i < pairs.length; i++) {
+                    const bodyA = pairs[i].bodyA;
+                    const bodyB = pairs[i].bodyB;
+
+                    // 과일이 어딘가에 닿으면 낙하 상태 해제
+                    if (bodyA.label.startsWith('fruit_')) bodyA.isFalling = false;
+                    if (bodyB.label.startsWith('fruit_')) bodyB.isFalling = false;
+
+                    // 과일 합성 로직
+                    if (bodyA.label.startsWith('fruit_') && bodyB.label.startsWith('fruit_')) {
+                        const indexA = parseInt(bodyA.label.split('_')[1]);
+                        const indexB = parseInt(bodyB.label.split('_')[1]);
+
+                        if (indexA === indexB && indexA < FRUITS.length - 1) {
+                            if(bodyA.isRemoved || bodyB.isRemoved) continue;
+
+                            bodyA.isRemoved = true; 
+                            bodyB.isRemoved = true;
+
+                            const newX = (bodyA.position.x + bodyB.position.x) / 2;
+                            const newY = (bodyA.position.y + bodyB.position.y) / 2;
+                            const newIndex = indexA + 1;
+
+                            World.remove(this.world, [bodyA, bodyB]);
+                            this.score += (indexA + 1) * 10;
+                            this.scoreElement.innerText = "점수: " + this.score;
+
+                            // 승리 조건 체크
+                            if (newIndex === FRUITS.length - 1) {
+                                this.triggerWin(newX, newY);
+                                return;
+                            }
+
+                            // 새 과일 생성 (이미지 없이 색상만 적용)
+                            const newFruitInfo = FRUITS[newIndex];
+                            
+                            const newBody = Bodies.circle(newX, newY, newFruitInfo.radius, {
+                                restitution: 0.2,
+                                label: `fruit_${newIndex}`,
+                                render: { fillStyle: newFruitInfo.color }
+                            });
+
+                            Composite.add(this.world, newBody);
+                        }
+                    }
+                }
+            }
+
+            checkGameOverCondition() {
+                if (this.isGameOver) return;
+
+                // 무적 시간이면 체크 안함
+                if (Date.now() < this.immunityUntil) return;
+
+                const bodies = Composite.allBodies(this.world);
+                for (let body of bodies) {
+                    if (body.isFalling) continue;
+
+                    // 벽 제외, 선 넘음, 거의 멈춤, 화면 밖 아님
+                    if (!body.isStatic && body.position.y < DEADLINE_Y && Math.abs(body.velocity.y) < 0.2 && body.position.y > 0) {
+                         if(body.lifeTime) body.lifeTime++;
+                         else body.lifeTime = 1;
+
+                         // 약 1.3초 (60프레임 기준 80틱) 이상 머물면 패배
+                         if(body.lifeTime > 80) { 
+                             this.triggerGameOver("패배!");
+                         }
+                    } else {
+                        body.lifeTime = 0;
+                    }
+                }
+            }
+
+            triggerWin(x, y) {
+                this.isGameOver = true;
+                World.clear(this.world, false); 
+                Composite.clear(this.world, false);
+                
+                // 승리 시 화면 가운데에 거대한 황금색 원을 띄워줍니다
+                const finalFace = Bodies.circle(WIDTH/2, HEIGHT/2, 200, {
+                    isStatic: true,
+                    render: { fillStyle: FRUITS[FRUITS.length-1].color }
+                });
+                Composite.add(this.world, finalFace);
+
+                this.overlay.style.display = 'flex';
+                this.overlay.innerHTML = `<div style="margin-bottom:20px;">게임 클리어!</div><div style="font-size:24px; color:#FFD700;">황금 곰돌이 완성!</div><button onclick="location.reload()">다시하기</button>`;
+                
+                if(gameMode === 2) {
+                    endGameForBoth(this.playerId === 1 ? 1 : 2); 
+                }
+            }
+
+            triggerGameOver(msg) {
+                if(this.isGameOver) return;
+                this.isGameOver = true;
+                this.overlay.style.display = 'flex';
+                this.overlay.innerHTML = `<div style="margin-bottom:20px;">${msg}</div><button onclick="location.reload()">다시하기</button>`;
+                
+                if(gameMode === 2) {
+                    endGameForBoth(this.playerId === 1 ? 2 : 1);
+                }
+            }
+        }
+
+        function startGame(mode) {
+            gameMode = mode;
+            document.getElementById('menu').style.display = 'none';
+            const container = document.getElementById('game-container');
+            container.innerHTML = '';
+            
+            if (document.activeElement) {
+                document.activeElement.blur();
+            }
+
+            if (mode === 1) {
+                games.push(new GameInstance('game-container', 1, {
+                    left: ['ArrowLeft', 'a', 'A'],
+                    right: ['ArrowRight', 'd', 'D'],
+                    drop: [' ', 'Enter']
+                }));
+            } else {
+                games.push(new GameInstance('game-container', 1, {
+                    left: ['a', 'A'],
+                    right: ['d', 'D'],
+                    drop: [' ']
+                }));
+                games.push(new GameInstance('game-container', 2, {
+                    left: ['ArrowLeft'],
+                    right: ['ArrowRight'],
+                    drop: ['Enter']
+                }));
+            }
+
+            window.addEventListener('keydown', (e) => {
+                const gameKeys = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Enter", "a", "d", "A", "D"];
+                if (gameKeys.includes(e.key)) {
+                    e.preventDefault(); 
+                }
+                games.forEach(game => game.handleInput(e.key));
+            });
+
+            games.forEach(game => {
+                Events.on(game.render, 'afterRender', () => {
+                    game.drawPreview(game.render.context);
+                });
+            });
+        }
+
+        function endGameForBoth(winnerId) {
+            games.forEach(game => {
+                game.isGameOver = true;
+                game.overlay.style.display = 'flex';
+                if(game.playerId === winnerId) {
+                    game.overlay.innerHTML = `<div style="color:#4CAF50; font-size:40px; margin-bottom:20px;">승리!</div><button onclick="location.reload()">다시하기</button>`;
+                } else {
+                    game.overlay.innerHTML = `<div style="color:red; font-size:40px; margin-bottom:20px;">패배...</div><button onclick="location.reload()">다시하기</button>`;
+                }
+            });
+        }
+    </script>
+</body>
+</html>
